@@ -1,0 +1,7 @@
+datasets
+huggingface_hub
+openai
+pandas
+python-dotenv
+psycopg2-binary
+sqlalchemy
