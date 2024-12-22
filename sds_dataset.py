@@ -24,17 +24,6 @@ class QandA(BaseModel):
 class QandAs(BaseModel):
     data: list[QandA]
 
-def escape_special_characters(text: str) -> str:
-    """
-    Escapes common special characters that can break JSON parsing.
-    Adjust this function as needed for your use case.
-    """
-    # Replace newlines, tabs, and carriage returns with spaces
-    text = re.sub(r"[\r\n\t]+", " ", text)
-    # Escape backslashes and double quotes
-    text = text.replace("\\", "\\\\").replace("\"", "\\\"")
-    return text
-
 # Database connection URL
 try:
     engine = create_engine(
@@ -120,9 +109,6 @@ The output should be a JSON array where each element is an object containing "qu
 
     # Extract the raw response
     response_text = chat_response.choices[0].message.content.strip()
-
-    # Escape special characters
-    # escaped_response_text = escape_special_characters(response_text)
 
     # Parse JSON into our data model
     try:

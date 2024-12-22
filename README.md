@@ -1,13 +1,15 @@
 # Spectrum Design Documentation Synthetic Dataset Generator
 
-This repository leverages a local Large Language Model (LLM) to generate synthetic datasets for fine-tuning other LLMs. It extracts data from a vector store database, generates question-answer pairs based on provided prompts, and publishes the resulting dataset. You can find the published dataset 🤗[JianLiao/spectrum-design-docs](https://huggingface.co/datasets/spectrum_design_synthetic).
+This repository leverages a local Large Language Model (LLM) to generate synthetic datasets for fine-tuning other LLMs. It extracts data from a vector store database, generates question-answer pairs based on provided prompts, and publishes the resulting dataset. You can find the published dataset at 🤗[JianLiao/spectrum-design-docs](https://huggingface.co/datasets/JianLiao/spectrum-design-docs).
 
 ## Project Structure
 
 ```
+├── example.env            # Example environment variables
 ├── publish_dataset.py     # Script to publish the dataset to Hugging Face Hub
 ├── requirements.txt       # List of dependencies
-└── sds_dataset.py     # Main script to generate synthetic Q&A dataset
+├── README.md              # Project overview and instructions
+└── sds_dataset.py         # Main script to generate synthetic Q&A dataset
 ```
 
 ## Setup Instructions
@@ -25,8 +27,11 @@ pip install -r requirements.txt
 ```
 
 ### 3. Environment Variables
-Create a `.env` file in the root directory with the following variables:
+Copy and rename `example.env` to `.env` file in the root directory with the following variables:
+
 ```dotenv
+HF_TOKEN=<your-hugging-face-token>
+
 DB_USER=<your-database-username>
 DB_PASSWORD=<your-database-password>
 DB_HOST=<your-database-host>
@@ -37,12 +42,15 @@ VECTOR_STORE_TABLE_NAME=<your-vector-store-table-name>
 
 ### 4. Configure OpenAI Client
 Ensure the OpenAI client is set up with the correct API key and base URL in the `sds_dataset.py` file:
+
 ```python
 client = OpenAI(
     api_key="EMPTY",
-    base_url="http://10.0.0.25:8000/v1",
+    base_url="http://{VLLM_HOST:PORT}/v1",
 )
 ```
+
+Here, I assume you have a locally hosted VLLM backend running at `http://{VLLM_HOST:PORT}/v1`.
 
 ## Running the Project
 
@@ -63,6 +71,8 @@ python publish_dataset.py
 
 - **Database Access**: Ensure the database connection URL in `.env` is correctly configured.
 - **OpenAI Client**: The OpenAI client uses a locally hosted LLM; ensure the API endpoint is reachable.
+- **vLLM**: The code assumes a locally hosted vLLM backend for generating synthetic data. Ollama should also work.
+- **Local LLM**: Local LLM must support JSON structured output. See [Qwen2.5](https://qwen.readthedocs.io/en/latest/deployment/vllm.html#structured-json-output) for an example.
 - **Customization**: Adjust prompts in the `sds_dataset.py` file to tailor Q&A generation to specific use cases.
 - **Error Logging**: Errors during dataset generation are logged for debugging.
 
