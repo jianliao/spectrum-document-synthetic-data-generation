@@ -1,6 +1,5 @@
 import os
 import time
-import re
 import pandas as pd
 from tqdm import tqdm
 import logging
@@ -10,6 +9,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from dotenv import load_dotenv
 from openai import OpenAI
 from pydantic import BaseModel, ValidationError
+from typing import Dict
 
 # Load environment variables
 load_dotenv()
@@ -17,117 +17,135 @@ load_dotenv()
 # Configure logging
 logging.basicConfig(level=logging.ERROR, format='%(asctime)s - %(levelname)s - %(message)s')
 
-class QandA(BaseModel):
-    question: str
-    answer: str
 
-class QandAs(BaseModel):
-    data: list[QandA]
+class GeneratedQuestions(BaseModel):
+    data: Dict[str, str]
 
-# Database connection URL
-try:
-    engine = create_engine(
-        f"postgresql://{os.getenv('DB_USER')}:{os.getenv('DB_PASSWORD')}@"
-        f"{os.getenv('DB_HOST')}:{os.getenv('DB_PORT')}/{os.getenv('DB_NAME')}"
-    )
-except SQLAlchemyError as e:
-    logging.error(f"Error creating database engine: {e}")
-    raise
 
-# Query to extract data
-query = f"SELECT text, metadata_ FROM {os.getenv('VECTOR_STORE_TABLE_NAME')}"
+def extract_doc_context(metadata: dict) -> str:
+    # Delete below key-value pair from metadata: "_node_content", "_node_type", "document_id", "doc_id", "ref_doc_id"
+    keys_to_remove = ["_node_content", "_node_type",
+                      "document_id", "doc_id", "ref_doc_id"]
+    for key in keys_to_remove:
+        metadata.pop(key, None)
 
-# Load data into a pandas DataFrame
-try:
-    df = pd.read_sql_query(query, engine)
-except SQLAlchemyError as e:
-    logging.error(f"Error executing query: {e}")
-    raise
+    hierarchy = metadata.get("categories", [])
+    if metadata.get("title") is not None:
+        hierarchy.append(metadata["title"])
+    if metadata.get("section_title") is not None:
+        hierarchy.append(metadata["section_title"])
+    return f"{" > ".join(hierarchy)}: {metadata.get('description', '')}"
 
-# Initialize OpenAI client
-client = OpenAI(
-    api_key="EMPTY",
-    base_url="http://10.0.0.25:8000/v1",
-)
 
-all_rows = []
+def create_db_engine():
+    try:
+        return create_engine(
+            f"postgresql://{os.getenv('DB_USER')}:{os.getenv('DB_PASSWORD')}@"
+            f"{os.getenv('DB_HOST')}:{os.getenv(
+                'DB_PORT')}/{os.getenv('DB_NAME')}"
+        )
+    except SQLAlchemyError as e:
+        logging.error(f"Error creating database engine: {e}")
+        raise
 
-# Record start time
-start_time = time.time()
 
-# Use tqdm to track progress across all rows
-for _, row in tqdm(df.iterrows(), total=len(df), desc="Generating Q&A"):
-    doc_content = row["text"]
-    doc_metadata = row["metadata_"]
+def load_data_from_db(engine):
+    query = f"SELECT text, metadata_ FROM {os.getenv('VECTOR_STORE_TABLE_NAME')}"
+    try:
+        return pd.read_sql_query(query, engine)
+    except SQLAlchemyError as e:
+        logging.error(f"Error executing query: {e}")
+        raise
 
-    prompt = f"""Create questions that a UI designer might ask based on provided content from the Spectrum design system documentation, and generate corresponding answers. Present each question-answer pair as a JSON object within a JSON array.
 
-# Steps
-1. **Review the Content**: Carefully read and analyze the provided Spectrum design system documentation.
-2. **Identify Key Information**: Identify important themes, guidelines, and potentially ambiguous or complex areas within the documentation.
-3. **Formulate Questions**: Develop questions that a UI designer might naturally have when reading or applying the documentation.
-4. **Answer Questions**: Based on your analysis of the content, generate suitable answers for each question.
-
-# Output Format
-The output should be a JSON array where each element is an object containing "question" and "answer" keys.
-
-# Notes
-
-- Ensure that each question clearly relates to the provided documentation content.
-- The answers should directly address the questions in a concise manner.
-- Consider including a mix of common queries and more in-depth questions to cover different levels of user inquiry.
-
-# Spectrum Documentation
-{doc_content}
-"""
-
-    # Generate Q&A
+def generate_questions(client, prompt):
     try:
         chat_response = client.chat.completions.create(
             model="Qwen/Qwen2.5-72B-Instruct-AWQ",
             messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "You are Qwen, created by Alibaba Cloud. You are a helpful assistant with "
-                        "deep expertise in UI system design, familiar with foundational concepts such "
-                        "as components, color, and typography."
-                    ),
-                },
                 {"role": "user", "content": prompt},
             ],
             temperature=0.7,
             top_p=0.8,
             extra_body={
                 "repetition_penalty": 1.05,
-                "guided_json": QandAs.model_json_schema(),
+                "guided_json": GeneratedQuestions.model_json_schema(),
             },
         )
+        return chat_response.choices[0].message.content.strip()
     except Exception as e:
-        logging.error(f"Error generating Q&A: {e}")
-        continue
+        logging.error(f"Error generating question: {e}")
+        return None
 
-    # Extract the raw response
-    response_text = chat_response.choices[0].message.content.strip()
 
-    # Parse JSON into our data model
-    try:
-        qandas = QandAs.model_validate_json(response_text)
-        for qa in qandas.data:
-            all_rows.append({
-                "question": qa.question,
-                "answer": qa.answer,
-                "text": doc_content,
-                "metadata": doc_metadata
-            })
-    except (ValidationError, ValueError) as e:
-        logging.error(f"Error parsing response for row:\n{response_text}\n{e}")
+def main():
+    engine = create_db_engine()
+    df = load_data_from_db(engine)
 
-# Create a new DataFrame with the collected rows
-final_df = pd.DataFrame(all_rows, columns=["question", "answer", "text", "metadata"])
-final_df.to_csv("synthesis_qa_output.csv", index=False)
+    # Initialize OpenAI client
+    client = OpenAI(
+        api_key="EMPTY",
+        base_url="http://10.0.0.25:8000/v1",
+    )
 
-# Calculate and print total time
-end_time = time.time()
-total_time = end_time - start_time
-logging.info(f"Total time: {total_time:.2f} seconds")
+    all_rows = []
+    start_time = time.time()
+
+    # Use tqdm to track progress across all rows
+    for _, row in tqdm(df.iterrows(), total=len(df), desc="Generating Qestions"):
+        doc_content = row["text"]
+        doc_metadata = row["metadata_"]
+        context = extract_doc_context(doc_metadata)
+
+        prompt = f"""You are a helpful AI assistant. Your task is to generate questions from a human UI/UX designer's perspective based on the given content and its context. All content comes from the Adobe Spectrum Design Documentation.
+
+## Input
+
+- Context:
+{context}
+- Given Content:
+{doc_content}
+
+## Instructions
+
+1. **Analyze Content**: Carefully review the key topics, facts, and concepts described in the given content. Focus only on the specific topic addressed in this content, regardless of the broader context.
+2. **Generate Scope-Limited Questions**: Formulate questions a UI/UX designer might ask, strictly about the topic described in the given content.
+   - Do Not generate questions solely based on the broader context or unrelated details.
+   - Ensure all questions are tied directly to the information and concepts presented in the given content.
+3. **Include a Mix Style of Questions**: Create a range of queries that cover both fundamental and advanced design considerations a UI/UX designer might have, such as understanding concepts, applying principles, and troubleshooting challenges.
+
+## Output Format
+
+Return the questions as a JSON object with the following structure:
+```json
+{{
+  "1": "Generated question text",
+  "2": "Generated question text",
+  ...
+}}
+```
+"""
+
+        response_text = generate_questions(client, prompt)
+        if response_text:
+            try:
+                questions = GeneratedQuestions.model_validate_json(response_text)
+                for q in questions.data.values():
+                    all_rows.append({
+                        "anchor": q,
+                        "positive": doc_content,
+                        "metadata": doc_metadata
+                    })
+            except (ValidationError, ValueError) as e:
+                logging.error(f"Error parsing response for row:\n{response_text}\n{e}")
+
+    final_df = pd.DataFrame(all_rows, columns=["anchor", "positive", "metadata"])
+    final_df.to_csv("synthetic_data.csv", index=False)
+
+    end_time = time.time()
+    total_time = end_time - start_time
+    logging.info(f"Total time: {total_time:.2f} seconds")
+
+
+if __name__ == "__main__":
+    main()
